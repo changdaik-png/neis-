@@ -6,7 +6,7 @@ from google.generativeai import caching
 import datetime
 
 # 1. 페이지 설정
-st.set_page_config(page_title="AI 저자와의 대화 (Server Ver.)", page_icon="📚")
+st.set_page_config(page_title="AI생기부매뉴얼 (Server Ver.)", page_icon="📚")
 
 # 2. 사이드바: 설정 및 책 선택
 with st.sidebar:
@@ -32,7 +32,7 @@ with st.sidebar:
         st.success(f"선택됨: {selected_file}")
 
 # 3. 메인 화면
-st.title("📖 AI 저자와의 인생 상담소")
+st.title("📖 2025 생기부 매뉴얼얼""
 st.caption("Google Context Caching 기술이 적용되었습니다.")
 
 if not google_api_key:
@@ -130,4 +130,5 @@ if user_input := st.chat_input("질문해 주세요..."):
             st.session_state.messages.append({"role": "model", "content": full_response})
             
         except Exception as e:
+
             st.error(f"답변 생성 중 오류: {e}")
