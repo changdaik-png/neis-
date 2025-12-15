@@ -32,7 +32,7 @@ with st.sidebar:
         st.success(f"선택됨: {selected_file}")
 
 # 3. 메인 화면
-st.title("📖 2025 생기부 매뉴얼얼""
+st.title("📖 2025 생기부 매뉴얼얼"
 st.caption("Google Context Caching 기술이 적용되었습니다.")
 
 if not google_api_key:
@@ -132,3 +132,4 @@ if user_input := st.chat_input("질문해 주세요..."):
         except Exception as e:
 
             st.error(f"답변 생성 중 오류: {e}")
+
