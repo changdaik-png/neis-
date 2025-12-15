@@ -1,99 +1,133 @@
 import streamlit as st
 import os
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
+import time
+import google.generativeai as genai
+from google.generativeai import caching
+import datetime
 
 # 1. 페이지 설정
-st.set_page_config(page_title="NEIS생기부매뉴얼 (Full Context)", page_icon="📖")
-st.title("📖 2025년도 NEIS 생기부 매뉴얼")
+st.set_page_config(page_title="AI 저자와의 대화 (Server Ver.)", page_icon="📚")
 
-# 2. 사이드바 설정
+# 2. 사이드바: 설정 및 책 선택
 with st.sidebar:
     st.header("설정")
+    # API 키는 보안상 입력받는 게 좋지만, 혼자 쓴다면 st.secrets에 넣어도 됩니다.
     google_api_key = st.text_input("Google API Key", type="password")
-    st.info("💡 책 전체를 AI가 읽고 답변합니다. 답변 속도가 조금 걸릴 수 있습니다.")
+    
+    st.divider()
+    st.subheader("📚 서버에 저장된 책 목록")
+    
+    # [핵심] 현재 서버(깃허브 리포지토리)에 있는 PDF 파일 자동 스캔
+    # Railway 서버의 현재 폴더에서 .pdf로 끝나는 파일을 모두 찾습니다.
+    current_dir = os.getcwd()
+    pdf_files = [f for f in os.listdir(current_dir) if f.endswith('.pdf')]
+    
+    if not pdf_files:
+        st.error("⚠️ 서버에 PDF 파일이 없습니다!")
+        st.info("깃허브 리포지토리에 .pdf 파일을 함께 업로드했는지 확인해주세요.")
+        selected_file = None
+    else:
+        # 파일이 여러 개일 경우 선택 가능
+        selected_file = st.selectbox("읽을 책을 선택하세요", pdf_files)
+        st.success(f"선택됨: {selected_file}")
+
+# 3. 메인 화면
+st.title("📖 AI 저자와의 인생 상담소")
+st.caption("Google Context Caching 기술이 적용되었습니다.")
 
 if not google_api_key:
-    st.warning("👈 왼쪽 사이드바에 API Key를 입력해주세요. 생기부 작성시 궁금한점을 물어보세요.")
+    st.warning("👈 사이드바에서 Google API Key를 입력해주세요.")
     st.stop()
 
-# 3. 책 내용 한 번만 로딩하기 (Session State 사용)
-if "book_content" not in st.session_state:
-    pdf_file = "your_book.pdf"
+if not selected_file:
+    st.stop()
+
+# API 키 설정
+genai.configure(api_key=google_api_key)
+
+# 4. 캐싱 로직 (서버에 있는 파일 -> 구글 캐시 서버로 전송)
+# 세션 상태 초기화
+if "cache_name" not in st.session_state:
+    st.session_state.cache_name = None
+if "current_book" not in st.session_state:
+    st.session_state.current_book = ""
+
+# 책이 변경되었거나 캐시가 없으면 생성 시작
+if selected_file != st.session_state.current_book or st.session_state.cache_name is None:
+    with st.spinner(f"🚀 '{selected_file}' 내용을 분석하여 구글 서버에 저장 중입니다... (최초 1회)"):
+        try:
+            # (1) 파일 경로 확인
+            file_path = os.path.join(current_dir, selected_file)
+            
+            # (2) 구글에 파일 업로드 (내 서버 -> 구글 서버)
+            uploaded_file = genai.upload_file(file_path)
+            
+            # (3) 처리 대기
+            while uploaded_file.state.name == "PROCESSING":
+                time.sleep(1)
+                uploaded_file = genai.get_file(uploaded_file.name)
+            
+            if uploaded_file.state.name == "FAILED":
+                raise ValueError("구글 서버 파일 처리 실패")
+
+            # (4) 캐시 생성 (유효기간 60분 설정)
+            cache = caching.CachedContent.create(
+                model='models/gemini-1.5-flash-001', # 또는 gemini-1.5-pro-001
+                display_name=selected_file,
+                system_instruction=(
+                    "너는 이 책을 쓴 저자야. 독자의 고민을 듣고 책의 내용을 바탕으로 상담해줘. "
+                    "책의 구체적인 구절이나 사례를 인용해서 답변하면 더 좋아. "
+                    "따뜻하고 통찰력 있는 어조를 유지해줘."
+                ),
+                contents=[uploaded_file],
+                ttl=datetime.timedelta(minutes=60)
+            )
+
+            # (5) 세션에 정보 저장
+            st.session_state.cache_name = cache.name
+            st.session_state.current_book = selected_file
+            st.session_state.messages = [] # 책이 바뀌면 대화 초기화
+            st.success(f"✅ 분석 완료! 이제 빠르고 저렴하게 대화할 수 있습니다.")
+            
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
+            st.stop()
+
+# 5. 모델 로딩 및 채팅
+try:
+    # 캐시된 ID로 모델 불러오기 (토큰 절약의 핵심)
+    cached_content = caching.CachedContent.get(st.session_state.cache_name)
+    model = genai.GenerativeModel.from_cached_content(cached_content=cached_content)
     
-    if os.path.exists(pdf_file):
-        with st.spinner("책 전체를 통째로 읽고 있습니다... (최초 1회만 실행)"):
-            try:
-                loader = PyPDFLoader(pdf_file)
-                pages = loader.load()
-                # 모든 페이지의 글자를 하나로 합침
-                full_text = "\n".join([page.page_content for page in pages])
-                st.session_state.book_content = full_text
-                st.success(f"책 읽기 완료! (총 {len(pages)} 페이지)")
-            except Exception as e:
-                st.error(f"책을 읽는 중 오류 발생: {e}")
-                st.stop()
-    else:
-        st.error("폴더에 'your_book.pdf' 파일이 없습니다.")
-        st.stop()
-
-# 4. AI 모델 설정 (선생님이 원하시는 2.5 버전 이름으로 설정)
-# 만약 2.5가 아직 API에 없다면 'gemini-1.5-pro'가 긴 글 읽기에 최적입니다.
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash", # 또는 "gemini-1.5-pro" (긴 글에 더 강력함)
-    temperature=0.5,
-    google_api_key=google_api_key
-)
-
-# 5. 프롬프트 설정 (책 내용 전체를 system prompt에 넣어버림)
-system_prompt = (
-    "너는 아래 책을 쓴 저자야. 독자의 고민을 듣고 책의 내용을 바탕으로 상담해줘. "
-    "책 전체 내용을 다 알고 있으니, 소제목이나 전체적인 맥락도 다 파악해서 답변해. "
-    "책에 없는 내용은 지어내지 말고, 책 내용을 인용해서 따뜻하게 말해줘."
-    "내용에 알맞은 귀여운 이모티콘도 넣어가면서 답변해줘."
-    "표로 답변을 해야하는 경우는 아래의 규칙을 반드시 지켜서 작성해줘."
-    "[표 작성 규칙] 1.표를 출력할 때는 반드시 표준 Markdown 문법을 준수하세요."
-    "[표 작성 규칙] 2.시각적인 점선(------------)이나 장식용 선을 사용하여 표를 그리지 마세요."
-    "[표 작성 규칙] 3.데이터가 없는 빈 행을 점선으로 채우지 마세요."
-    "[표 작성 규칙] 4. 반드시 | 헤더 | 헤더 | 형식 바로 아래에 |---|---| 형식을 사용하여 표를 렌더링하세요."
-    "\n\n"
-    "--- [책 내용 전체] ---\n"
-    f"{st.session_state.book_content}"
-)
+except Exception as e:
+    st.error("⚠️ 세션이 만료되었습니다. (1시간 경과) 새로고침 해주세요.")
+    st.session_state.cache_name = None
+    st.stop()
 
 # 6. 채팅 인터페이스
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 대화 기록 표시
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# 질문 처리
-if user_input := st.chat_input("질문해 주세요 (예: 이 책의 목차를 알려줘)"):
+if user_input := st.chat_input("질문해 주세요..."):
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        full_response = ""
-        
-        # 여기서 이전 대화 내역도 함께 보내야 문맥이 유지됨
-        messages = [("system", system_prompt)]
-        for msg in st.session_state.messages:
-            messages.append((msg["role"], msg["content"]))
-            
         try:
-            with st.spinner("생각 중..."):
-                response = llm.invoke(messages)
-                message_placeholder.markdown(response.content)
-                full_response = response.content
+            # 대화 기록을 포함하여 문맥 유지 (최근 10개만 보내기 등 최적화 가능)
+            chat_history = [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages]
+            
+            response = model.generate_content(chat_history)
+            full_response = response.text
+            
+            message_placeholder.markdown(full_response)
+            st.session_state.messages.append({"role": "model", "content": full_response})
+            
         except Exception as e:
-            st.error(f"에러가 발생했습니다: {e}")
-
-    if full_response:
-
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+            st.error(f"답변 생성 중 오류: {e}")
