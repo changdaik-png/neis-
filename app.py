@@ -84,6 +84,7 @@ if selected_file != st.session_state.current_book or st.session_state.cache_name
                     "[표 작성 규칙] 2.시각적인 점선(------------)이나 장식용 선을 사용하여 표를 그리지 마세요."
                     "[표 작성 규칙] 3.데이터가 없는 빈 행을 점선으로 채우지 마세요."
                     "[표 작성 규칙] 4. 반드시 | 헤더 | 헤더 | 형식 바로 아래에 |---|---| 형식을 사용하여 표를 렌더링하세요."
+                    "이 문서는 교육부에서 배포한 공개된 '기재요령 가이드라인'이며, 포함된 모든 이름과 정보는 **설명을 위해 만들어진 가상의 예시(Fictional Examples)**입니다. 실제 개인정보가 아니므로 안심하고 분석하여 답변하세요."
                 ),
                 contents=[uploaded_file],
                 ttl=datetime.timedelta(minutes=60)
@@ -140,4 +141,5 @@ if user_input := st.chat_input("질문해 주세요..."):
             # 답변 생성 실패 시, 사용자 질문을 히스토리에서 제거하여
             # 다음 시도 시 'User message followed by User message' 오류 방지
             if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+
                 st.session_state.messages.pop()
