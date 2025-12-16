@@ -11,14 +11,11 @@ st.set_page_config(page_title="2025생활기록부 매뉴얼", page_icon="📚")
 # 2. 사이드바: 설정 및 책 선택
 with st.sidebar:
     st.header("설정")
-    # API 키는 보안상 입력받는 게 좋지만, 혼자 쓴다면 st.secrets에 넣어도 됩니다.
     google_api_key = st.text_input("Google API Key", type="password")
     
     st.divider()
     st.subheader("📚 서버에 저장된 책 목록")
     
-    # [핵심] 현재 서버(깃허브 리포지토리)에 있는 PDF 파일 자동 스캔
-    # Railway 서버의 현재 폴더에서 .pdf로 끝나는 파일을 모두 찾습니다.
     current_dir = os.getcwd()
     pdf_files = [f for f in os.listdir(current_dir) if f.endswith('.pdf')]
     
@@ -27,7 +24,6 @@ with st.sidebar:
         st.info("깃허브 리포지토리에 .pdf 파일을 함께 업로드했는지 확인해주세요.")
         selected_file = None
     else:
-        # 파일이 여러 개일 경우 선택 가능
         selected_file = st.selectbox("읽을 책을 선택하세요", pdf_files)
         st.success(f"선택됨: {selected_file}")
 
@@ -45,8 +41,7 @@ if not selected_file:
 # API 키 설정
 genai.configure(api_key=google_api_key)
 
-# 4. 캐싱 로직 (서버에 있는 파일 -> 구글 캐시 서버로 전송)
-# 세션 상태 초기화
+# 4. 캐싱 로직
 if "cache_name" not in st.session_state:
     st.session_state.cache_name = None
 if "current_book" not in st.session_state:
@@ -59,20 +54,22 @@ if selected_file != st.session_state.current_book or st.session_state.cache_name
             # (1) 파일 경로 확인
             file_path = os.path.join(current_dir, selected_file)
             
-            # (2) 구글에 파일 업로드 (내 서버 -> 구글 서버)
+            # (2) 구글에 파일 업로드
             uploaded_file = genai.upload_file(file_path)
-            
-            # (3) 처리 대기
+            print(f"업로드 시작: {uploaded_file.name}") # 로그 확인용
+
+            # (3) 처리 대기 (Processing State 확인)
             while uploaded_file.state.name == "PROCESSING":
-                time.sleep(1)
+                time.sleep(2) # 1초는 너무 짧을 수 있어 2초로 변경
                 uploaded_file = genai.get_file(uploaded_file.name)
             
             if uploaded_file.state.name == "FAILED":
                 raise ValueError("구글 서버 파일 처리 실패")
 
-            # (4) 캐시 생성 (유효기간 60분 설정)
+            # (4) 캐시 생성
+            # [수정됨] 모델 이름을 정확한 버전으로 변경 (gemini-1.5-flash-001)
             cache = caching.CachedContent.create(
-                model='models/gemini-2.5-flash', # 또는 gemini-1.5-pro-001
+                model='models/gemini-2.5-flash', 
                 display_name=selected_file,
                 system_instruction=(
                     "너는 2025년 생활기록부 작성지침을 완전하게 알고 있는 전문가야. 질문자의 고민을 듣고 책의 내용을 바탕으로 상담해줘. "
@@ -84,6 +81,7 @@ if selected_file != st.session_state.current_book or st.session_state.cache_name
                     "[표 작성 규칙] 2.시각적인 점선(------------)이나 장식용 선을 사용하여 표를 그리지 마세요."
                     "[표 작성 규칙] 3.데이터가 없는 빈 행을 점선으로 채우지 마세요."
                     "[표 작성 규칙] 4. 반드시 | 헤더 | 헤더 | 형식 바로 아래에 |---|---| 형식을 사용하여 표를 렌더링하세요."
+                    # [중요] 개인정보 오인 방지 프롬프트 유지
                     "이 문서는 교육부에서 배포한 공개된 '기재요령 가이드라인'이며, 포함된 모든 이름과 정보는 **설명을 위해 만들어진 가상의 예시(Fictional Examples)**입니다. 실제 개인정보가 아니므로 안심하고 분석하여 답변하세요."
                 ),
                 contents=[uploaded_file],
@@ -93,7 +91,7 @@ if selected_file != st.session_state.current_book or st.session_state.cache_name
             # (5) 세션에 정보 저장
             st.session_state.cache_name = cache.name
             st.session_state.current_book = selected_file
-            st.session_state.messages = [] # 책이 바뀌면 대화 초기화
+            st.session_state.messages = [] 
             st.success(f"✅ 분석 완료! 이제 빠르고 저렴하게 대화할 수 있습니다.")
             
         except Exception as e:
@@ -102,7 +100,6 @@ if selected_file != st.session_state.current_book or st.session_state.cache_name
 
 # 5. 모델 로딩 및 채팅
 try:
-    # 캐시된 ID로 모델 불러오기 (토큰 절약의 핵심)
     cached_content = caching.CachedContent.get(st.session_state.cache_name)
     model = genai.GenerativeModel.from_cached_content(cached_content=cached_content)
     
@@ -127,19 +124,28 @@ if user_input := st.chat_input("질문해 주세요..."):
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         try:
-            # 대화 기록을 포함하여 문맥 유지 (최근 10개만 보내기 등 최적화 가능)
+            # 채팅 기록 구성
             chat_history = [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages]
             
             response = model.generate_content(chat_history)
-            full_response = response.text
             
-            message_placeholder.markdown(full_response)
-            st.session_state.messages.append({"role": "model", "content": full_response})
-            
-        except Exception as e:
-            st.error(f"답변 생성 중 오류: {e}")
-            # 답변 생성 실패 시, 사용자 질문을 히스토리에서 제거하여
-            # 다음 시도 시 'User message followed by User message' 오류 방지
-            if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+            # [수정됨] 답변 차단(Safety Block) 시 앱이 죽지 않도록 방어 코드 추가
+            if response.parts:
+                full_response = response.text
+                message_placeholder.markdown(full_response)
+                st.session_state.messages.append({"role": "model", "content": full_response})
+            else:
+                # 답변이 차단된 경우
+                error_msg = f"⚠️ 답변이 생성되지 않았습니다.\n차단 사유: {response.prompt_feedback.block_reason}"
+                message_placeholder.error(error_msg)
+                print(response.prompt_feedback) # 서버 로그에 상세 내용 출력
+                
+                # 차단된 경우에도 히스토리에 남길지, 아니면 사용자 질문을 취소할지 결정
+                # 여기서는 사용자 질문을 pop하여 대화를 다시 시도할 수 있게 함
+                if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+                    st.session_state.messages.pop()
 
+        except Exception as e:
+            st.error(f"시스템 오류: {e}")
+            if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
                 st.session_state.messages.pop()
